@@ -9,7 +9,7 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 COINGLASS_API_KEY = os.getenv("COINGLASS_API_KEY")
 
-VOLATILITY_THRESHOLD = 5   # % волатильности за 1 час
+VOLATILITY_THRESHOLD = 0.1   # % волатильности за 1 час
 CHECK_INTERVAL = 300       # каждые 5 минут
 DAILY_MESSAGE_INTERVAL = 24 * 60 * 60  # раз в сутки
 
