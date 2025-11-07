@@ -17,16 +17,18 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 COINGLASS_API_KEY = os.getenv("COINGLASS_API_KEY")
 
-VOLATILITY_THRESHOLD = 0.5  # порог волатильности %
-CHECK_INTERVAL = 300        # проверка каждые 5 минут
-DAILY_MESSAGE_INTERVAL = 86400  # раз в сутки
+VOLATILITY_THRESHOLD = 0.5  # % волатильности
+CHECK_INTERVAL = 300        # 5 минут
+DAILY_MESSAGE_INTERVAL = 86400  # 1 раз в день
 
 bot = telebot.TeleBot(TOKEN)
 last_daily_message = datetime.now() - timedelta(seconds=DAILY_MESSAGE_INTERVAL)
-api_was_down = False  # флаг, чтобы отследить восстановление API
+api_was_down = False
+api_down_since = None  # время, когда CoinGlass впервые перестал отвечать
+
 
 def get_volatility():
-    global api_was_down
+    global api_was_down, api_down_since
     url = "https://open-api.coinglass.com/api/pro/v1/futures/volatility"
     headers = {"coinglassSecret": COINGLASS_API_KEY}
 
@@ -35,19 +37,30 @@ def get_volatility():
 
         if response.status_code != 200:
             print(f"⚠️ Ошибка CoinGlass API: {response.status_code}")
-            api_was_down = True
+
+            # если API только что упало — запоминаем время
+            if not api_was_down:
+                api_down_since = datetime.now()
+                api_was_down = True
+
+            # если API не работает более 30 минут — уведомляем
+            elif api_down_since and datetime.now() - api_down_since > timedelta(minutes=30):
+                bot.send_message(CHAT_ID, "⚠️ CoinGlass API не отвечает уже более 30 минут. Проверка приостановлена.")
+                api_down_since = datetime.now()  # сбрасываем, чтобы не спамить
+
             return None
+
+        # если API снова заработало
+        if api_was_down:
+            bot.send_message(CHAT_ID, "✅ CoinGlass API снова доступен — продолжаю проверку рынка.")
+            print("✅ CoinGlass API восстановлено.")
+            api_was_down = False
+            api_down_since = None
 
         data = response.json()
         if not data.get("data"):
             print("⚠️ Нет данных в ответе CoinGlass.")
             return None
-
-        # если API снова заработало — уведомляем
-        if api_was_down:
-            bot.send_message(CHAT_ID, "✅ CoinGlass API снова доступен — продолжаю проверку рынка.")
-            api_was_down = False
-            print("✅ CoinGlass API восстановлено, уведомление отправлено.")
 
         alerts = []
         for coin in data["data"]:
@@ -71,7 +84,9 @@ def get_volatility():
 
     except Exception as e:
         print("❌ Ошибка при запросе CoinGlass API:", e)
-        api_was_down = True
+        if not api_was_down:
+            api_down_since = datetime.now()
+            api_was_down = True
         return None
 
 
@@ -80,7 +95,7 @@ def run():
     print("🧠 Основной блок выполняется — бот начинает запуск.")
 
     try:
-        bot.send_message(CHAT_ID, "✅ Бот запущен и следит за волатильностью монет.")
+        bot.send_message(CHAT_ID, "🚀 Бот запущен и следит за волатильностью монет.")
         print("✅ Стартовое сообщение успешно отправлено в Telegram.")
     except Exception as e:
         print("❌ Не удалось отправить стартовое сообщение:", e)
@@ -100,7 +115,7 @@ def run():
         else:
             print("Нет значительных изменений.")
 
-        # ежедневное сообщение
+        # ежедневное уведомление
         if datetime.now() - last_daily_message > timedelta(seconds=DAILY_MESSAGE_INTERVAL):
             try:
                 bot.send_message(CHAT_ID, "📊 Бот активен. Проверяю рынок — пока без значительных изменений.")
@@ -112,5 +127,5 @@ def run():
 
 
 if __name__ == "__main__":
-    print("🚀 Бот запущен.")
+    print("💥 Бот запущен.")
     run()
