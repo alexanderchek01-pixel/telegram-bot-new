@@ -24,7 +24,7 @@ DAILY_MESSAGE_INTERVAL = 86400  # 1 раз в день
 bot = telebot.TeleBot(TOKEN)
 last_daily_message = datetime.now() - timedelta(seconds=DAILY_MESSAGE_INTERVAL)
 api_was_down = False
-api_down_since = None  # время, когда CoinGlass впервые перестал отвечать
+api_down_since = None  # время начала сбоя API
 
 
 def get_volatility():
@@ -35,25 +35,26 @@ def get_volatility():
     try:
         response = requests.get(url, headers=headers, timeout=10)
 
+        # CoinGlass не отвечает
         if response.status_code != 200:
             print(f"⚠️ Ошибка CoinGlass API: {response.status_code}")
 
-            # если API только что упало — запоминаем время
             if not api_was_down:
                 api_down_since = datetime.now()
                 api_was_down = True
 
-            # если API не работает более 30 минут — уведомляем
             elif api_down_since and datetime.now() - api_down_since > timedelta(minutes=30):
                 bot.send_message(CHAT_ID, "⚠️ CoinGlass API не отвечает уже более 30 минут. Проверка приостановлена.")
-                api_down_since = datetime.now()  # сбрасываем, чтобы не спамить
+                api_down_since = datetime.now()
 
             return None
 
-        # если API снова заработало
+        # CoinGlass восстановился
         if api_was_down:
-            bot.send_message(CHAT_ID, "✅ CoinGlass API снова доступен — продолжаю проверку рынка.")
-            print("✅ CoinGlass API восстановлено.")
+            downtime = datetime.now() - api_down_since
+            minutes_down = int(downtime.total_seconds() / 60)
+            bot.send_message(CHAT_ID, f"✅ CoinGlass API восстановлено. Недоступно было {minutes_down} мин.")
+            print(f"✅ API восстановлено после {minutes_down} минут.")
             api_was_down = False
             api_down_since = None
 
@@ -115,7 +116,7 @@ def run():
         else:
             print("Нет значительных изменений.")
 
-        # ежедневное уведомление
+        # Ежедневное сообщение
         if datetime.now() - last_daily_message > timedelta(seconds=DAILY_MESSAGE_INTERVAL):
             try:
                 bot.send_message(CHAT_ID, "📊 Бот активен. Проверяю рынок — пока без значительных изменений.")
