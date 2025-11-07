@@ -24,11 +24,12 @@ DAILY_MESSAGE_INTERVAL = 86400  # 1 раз в день
 bot = telebot.TeleBot(TOKEN)
 last_daily_message = datetime.now() - timedelta(seconds=DAILY_MESSAGE_INTERVAL)
 api_was_down = False
-api_down_since = None  # время начала сбоя API
+api_down_since = None  # время, когда CoinGlass перестал отвечать
+last_success_check = None  # время последней успешной проверки
 
 
 def get_volatility():
-    global api_was_down, api_down_since
+    global api_was_down, api_down_since, last_success_check
     url = "https://open-api.coinglass.com/api/pro/v1/futures/volatility"
     headers = {"coinglassSecret": COINGLASS_API_KEY}
 
@@ -53,8 +54,9 @@ def get_volatility():
         if api_was_down:
             downtime = datetime.now() - api_down_since
             minutes_down = int(downtime.total_seconds() / 60)
-            bot.send_message(CHAT_ID, f"✅ CoinGlass API восстановлено. Недоступно было {minutes_down} мин.")
-            print(f"✅ API восстановлено после {minutes_down} минут.")
+            last_time = last_success_check.strftime("%H:%M") if last_success_check else "неизвестно"
+            bot.send_message(CHAT_ID, f"✅ CoinGlass API восстановлено. Недоступно было {minutes_down} мин.\n🕓 Последняя успешная проверка: {last_time}.")
+            print(f"✅ API восстановлено после {minutes_down} минут (последняя успешная проверка {last_time}).")
             api_was_down = False
             api_down_since = None
 
@@ -62,6 +64,8 @@ def get_volatility():
         if not data.get("data"):
             print("⚠️ Нет данных в ответе CoinGlass.")
             return None
+
+        last_success_check = datetime.now()  # обновляем момент успешного ответа API
 
         alerts = []
         for coin in data["data"]:
