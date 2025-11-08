@@ -8,17 +8,19 @@ from datetime import datetime, timedelta
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-CHECK_INTERVAL = 300  # каждые 5 минут
-VOLATILITY_THRESHOLD = 10.0  # 10% движение за 24 часа
+CHECK_INTERVAL = 180  # каждые 3 минуты
+VOLATILITY_THRESHOLD = 10.0  # движение в % за 15 минут
+LOOKBACK_MINUTES = 15  # интервал анализа (в минутах)
 
 bot = telebot.TeleBot(TOKEN)
+price_history = {}  # сохраняем цену и время последнего обновления для каждой монеты
 
-# === Получаем данные с CoinGecko ===
 def get_market_data():
+    """Получение текущих данных с CoinGecko"""
     try:
         url = (
             "https://api.coingecko.com/api/v3/coins/markets"
-            "?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false&price_change_percentage=24h"
+            "?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false"
         )
         response = requests.get(url, timeout=10)
         response.raise_for_status()
@@ -27,43 +29,55 @@ def get_market_data():
         print("Ошибка при получении данных с CoinGecko:", e)
         return None
 
-# === Проверяем волатильность монет ===
-def get_volatile_coins():
+def analyze_volatility():
+    """Сравнение текущих цен с ценами 15 минут назад"""
     data = get_market_data()
     if not data:
         return []
 
+    now = datetime.now()
     alerts = []
+
     for coin in data:
         try:
-            change = coin.get("price_change_percentage_24h", 0)
-            name = coin.get("name", "Unknown")
-            symbol = coin.get("symbol", "").upper()
-            price = coin.get("current_price", 0)
+            coin_id = coin["id"]
+            name = coin["name"]
+            symbol = coin["symbol"].upper()
+            price = coin["current_price"]
 
-            if change is None:
-                continue
+            # если монета уже есть в истории — проверяем изменение
+            if coin_id in price_history:
+                old_price, timestamp = price_history[coin_id]
+                elapsed = (now - timestamp).total_seconds() / 60
 
-            if abs(change) >= VOLATILITY_THRESHOLD:
-                direction = "🟢 выросла" if change > 0 else "🔴 упала"
-                arrow = "🟢⬆️" if change > 0 else "🔴⬇️"
-                alert = (
-                    f"🚨 *{name}* ({symbol}) {arrow}\n"
-                    f"{direction} на {abs(change):.2f}% за 24 часа.\n"
-                    f"💰 Текущая цена: ${price:.4f}\n"
-                    f"[Открыть на CoinGecko](https://www.coingecko.com/en/coins/{coin['id']})"
-                )
-                alerts.append(alert)
+                if elapsed >= LOOKBACK_MINUTES:
+                    change = ((price - old_price) / old_price) * 100
+
+                    if abs(change) >= VOLATILITY_THRESHOLD:
+                        direction = "🟢 выросла" if change > 0 else "🔴 упала"
+                        arrow = "🟢⬆️" if change > 0 else "🔴⬇️"
+                        alerts.append(
+                            f"🚨 *{name}* ({symbol}) {arrow}\n"
+                            f"{direction} на {abs(change):.2f}% за {LOOKBACK_MINUTES} минут.\n"
+                            f"💰 Цена сейчас: ${price:.4f}\n"
+                            f"[Открыть график на CoinGecko](https://www.coingecko.com/en/coins/{coin_id})"
+                        )
+
+                    # обновляем данные после проверки
+                    price_history[coin_id] = (price, now)
+            else:
+                # добавляем монету в историю, если её ещё нет
+                price_history[coin_id] = (price, now)
+
         except Exception:
             continue
 
     return alerts
 
-# === Основной цикл ===
 def run():
-    print("🚀 Бот запущен. Проверяю рынок через CoinGecko...")
+    print("🚀 Бот запущен. Проверяю рынок CoinGecko каждые 3 минуты...")
     try:
-        bot.send_message(CHAT_ID, "✅ Бот запущен. Следит за волатильностью монет через CoinGecko (24h > 10%).")
+        bot.send_message(CHAT_ID, "✅ Бот запущен и следит за волатильностью монет (15 мин, >10%).")
     except Exception as e:
         print("Ошибка отправки стартового сообщения:", e)
 
@@ -71,24 +85,33 @@ def run():
 
     while True:
         try:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверяю данные с CoinGecko...")
-            alerts = get_volatile_coins()
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверяю рынок...")
+            alerts = analyze_volatility()
 
             if alerts:
-                full_message = "\n\n".join(alerts)
+                message = "\n\n".join(alerts)
                 bot.send_message(
                     CHAT_ID,
-                    f"⚡ Обнаружена сильная волатильность:\n\n{full_message}",
+                    f"⚡ Обнаружено сильное движение (15 мин, >10%):\n\n{message}",
                     parse_mode="Markdown",
                     disable_web_page_preview=True
                 )
             else:
-                print("Нет значительных изменений.")
+                print("Нет резких изменений за последние 15 минут.")
 
-            # Каждые 24 часа пишет, что бот активен
+            # ежедневное напоминание, что бот активен
             if datetime.now() - last_daily_message > timedelta(hours=24):
                 bot.send_message(CHAT_ID, "🤖 Бот активен. Проверяю рынок CoinGecko.")
                 last_daily_message = datetime.now()
+
+            time.sleep(CHECK_INTERVAL)
+
+        except Exception as e:
+            print("Ошибка в основном цикле:", e)
+            time.sleep(60)
+
+if __name__ == "__main__":
+    run()
 
             time.sleep(CHECK_INTERVAL)
 
