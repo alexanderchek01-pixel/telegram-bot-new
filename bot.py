@@ -110,7 +110,8 @@ def run():
                 bot.send_message(CHAT_ID, "🤖 Бот активен. Проверяю рынок OKX.")
                 last_daily_message = datetime.now()
 
-            time.sleep(CHECK_INTERVAL)
+           
+                        time.sleep(CHECK_INTERVAL)
 
         except Exception as e:
             print("Ошибка в основном цикле:", e)
@@ -118,3 +119,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+            
+            
+
+        
