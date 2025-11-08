@@ -2,7 +2,6 @@ import requests
 import time
 from datetime import datetime, timedelta
 from telegram import Bot
-import imghdr  # Добавляем встроенный модуль вручную
 
 # ==== НАСТРОЙКИ ====
 TOKEN = "ВАШ_TELEGRAM_TOKEN"
