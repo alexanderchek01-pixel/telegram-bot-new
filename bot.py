@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-CHECK_INTERVAL = 300  # проверка каждые 5 минут
+CHECK_INTERVAL = 300  # каждые 5 минут
 VOLATILITY_THRESHOLD = 10.0  # 10% движение
 TIMEFRAME_MINUTES = 15  # анализ за 15 минут
 
@@ -16,23 +16,38 @@ bot = telebot.TeleBot(TOKEN)
 
 # === Получаем все пары USDT с Binance Futures ===
 def get_futures_symbols():
+    url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
     try:
-        response = requests.get("https://fapi.binance.com/fapi/v1/exchangeInfo")
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
         data = response.json()
-        symbols = [s["symbol"] for s in data["symbols"] if s["symbol"].endswith("USDT")]
+
+        if "symbols" not in data:
+            print("⚠️ Binance API ответил странно:", data)
+            return []
+
+        symbols = [
+            s["symbol"] for s in data["symbols"]
+            if s.get("contractType") == "PERPETUAL" and s["symbol"].endswith("USDT")
+        ]
+        print(f"✅ Получено {len(symbols)} пар с Binance Futures.")
         return symbols
-    except Exception as e:
-        print("Ошибка получения списка пар:", e)
+
+    except requests.exceptions.RequestException as e:
+        print("Ошибка подключения к Binance API:", e)
+        return []
+    except ValueError:
+        print("Ошибка разбора JSON — возможно, пришёл HTML-ответ.")
         return []
 
 # === Получаем изменение цены за выбранный интервал ===
 def get_price_change(symbol):
     try:
         url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=1m&limit={TIMEFRAME_MINUTES}"
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         data = response.json()
 
-        if not data or len(data) < 2:
+        if not isinstance(data, list) or len(data) < 2:
             return None
 
         open_price = float(data[0][1])
@@ -42,7 +57,7 @@ def get_price_change(symbol):
     except Exception:
         return None
 
-# === Основной блок ===
+# === Основной цикл ===
 def run():
     print("🚀 Бот запущен. Проверяю рынок Binance Futures...")
     try:
@@ -56,8 +71,6 @@ def run():
     if not symbols:
         bot.send_message(CHAT_ID, "⚠️ Не удалось получить список пар с Binance Futures.")
         return
-
-    print(f"Всего найдено {len(symbols)} пар USDT.")
 
     while True:
         try:
@@ -91,7 +104,7 @@ def run():
             else:
                 print("Нет значительных изменений.")
 
-            # Раз в день пишет, что активен
+            # Ежедневное уведомление
             if datetime.now() - last_daily_message > timedelta(hours=24):
                 bot.send_message(CHAT_ID, "🤖 Бот активен. Проверяю рынок Binance Futures.")
                 last_daily_message = datetime.now()
@@ -101,7 +114,6 @@ def run():
         except Exception as e:
             print("Ошибка в основном цикле:", e)
             time.sleep(60)
-
 
 if __name__ == "__main__":
     run()
