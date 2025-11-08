@@ -9,109 +9,106 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 CHECK_INTERVAL = 180  # каждые 3 минуты
-VOLATILITY_THRESHOLD = 10.0  # движение в % за 15 минут
-LOOKBACK_MINUTES = 15  # интервал анализа (в минутах)
+VOLATILITY_THRESHOLD = 10.0  # % волатильности за 15 минут
+LOOKBACK_INTERVAL = "15m"  # можно 5m, 15m, 1h
 
 bot = telebot.TeleBot(TOKEN)
-price_history = {}  # сохраняем цену и время последнего обновления для каждой монеты
+last_alerts = {}  # чтобы не спамить повторными сигналами
 
-def get_market_data():
-    """Получение текущих данных с CoinGecko"""
+# === Получаем список фьючерсов OKX ===
+def get_okx_symbols():
+    url = "https://www.okx.com/api/v5/public/instruments?instType=SWAP"
     try:
-        url = (
-            "https://api.coingecko.com/api/v3/coins/markets"
-            "?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false"
-        )
         response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        return response.json()
+        data = response.json()
+        if "data" not in data:
+            print("⚠️ Ошибка: нет данных о парах.")
+            return []
+        symbols = [x["instId"] for x in data["data"] if x["instId"].endswith("-USDT-SWAP")]
+        print(f"✅ Получено {len(symbols)} фьючерсных пар.")
+        return symbols
     except Exception as e:
-        print("Ошибка при получении данных с CoinGecko:", e)
-        return None
-
-def analyze_volatility():
-    """Сравнение текущих цен с ценами 15 минут назад"""
-    data = get_market_data()
-    if not data:
+        print("Ошибка при получении списка пар:", e)
         return []
 
-    now = datetime.now()
-    alerts = []
-
-    for coin in data:
-        try:
-            coin_id = coin["id"]
-            name = coin["name"]
-            symbol = coin["symbol"].upper()
-            price = coin["current_price"]
-
-            # если монета уже есть в истории — проверяем изменение
-            if coin_id in price_history:
-                old_price, timestamp = price_history[coin_id]
-                elapsed = (now - timestamp).total_seconds() / 60
-
-                if elapsed >= LOOKBACK_MINUTES:
-                    change = ((price - old_price) / old_price) * 100
-
-                    if abs(change) >= VOLATILITY_THRESHOLD:
-                        direction = "🟢 выросла" if change > 0 else "🔴 упала"
-                        arrow = "🟢⬆️" if change > 0 else "🔴⬇️"
-                        alerts.append(
-                            f"🚨 *{name}* ({symbol}) {arrow}\n"
-                            f"{direction} на {abs(change):.2f}% за {LOOKBACK_MINUTES} минут.\n"
-                            f"💰 Цена сейчас: ${price:.4f}\n"
-                            f"[Открыть график на CoinGecko](https://www.coingecko.com/en/coins/{coin_id})"
-                        )
-
-                    # обновляем данные после проверки
-                    price_history[coin_id] = (price, now)
-            else:
-                # добавляем монету в историю, если её ещё нет
-                price_history[coin_id] = (price, now)
-
-        except Exception:
-            continue
-
-    return alerts
-
-def run():
-    print("🚀 Бот запущен. Проверяю рынок CoinGecko каждые 3 минуты...")
+# === Получаем волатильность по конкретной паре ===
+def get_volatility(symbol):
+    url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={LOOKBACK_INTERVAL}&limit=2"
     try:
-        bot.send_message(CHAT_ID, "✅ Бот запущен и следит за волатильностью монет (15 мин, >10%).")
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        if "data" not in data or len(data["data"]) < 2:
+            return None
+
+        latest = data["data"][0]
+        open_price = float(latest[1])
+        close_price = float(latest[4])
+        change = ((close_price - open_price) / open_price) * 100
+        return change, close_price
     except Exception as e:
-        print("Ошибка отправки стартового сообщения:", e)
+        print(f"Ошибка при получении свечей {symbol}: {e}")
+        return None
+
+# === Основной цикл ===
+def run():
+    bot.send_message(CHAT_ID, "✅ Бот запущен. Следит за фьючерсами OKX и присылает сигналы (>10% за 15 минут).")
+    symbols = get_okx_symbols()
+    if not symbols:
+        bot.send_message(CHAT_ID, "⚠️ Не удалось получить список фьючерсов OKX.")
+        return
 
     last_daily_message = datetime.now() - timedelta(hours=24)
 
     while True:
         try:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверяю рынок...")
-            alerts = analyze_volatility()
+            alerts = []
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверяю {len(symbols)} пар...")
+
+            for symbol in symbols:
+                result = get_volatility(symbol)
+                if not result:
+                    continue
+
+                change, price = result
+                base_coin = symbol.split("-")[0]  # например, BTC из BTC-USDT-SWAP
+
+                # Проверяем антиспам (если сигнал уже был недавно)
+                last_time = last_alerts.get(symbol)
+                if last_time and (datetime.now() - last_time).total_seconds() < 900:  # 15 минут
+                    continue
+
+                if abs(change) >= VOLATILITY_THRESHOLD:
+                    direction = "🟢 выросла" if change > 0 else "🔴 упала"
+                    arrow = "🟢⬆️" if change > 0 else "🔴⬇️"
+
+                    # ✅ Ссылка на CoinGlass HeatMap
+                    coinglass_link = f"https://www.coinglass.com/pro/futures/LiquidationHeatMap?coin={base_coin}&type=pair"
+
+                    msg = (
+                        f"🚨 *{symbol}* {arrow}\n"
+                        f"{direction} на {abs(change):.2f}% за {LOOKBACK_INTERVAL}.\n"
+                        f"💰 Цена сейчас: ${price:.4f}\n"
+                        f"[📊 Открыть в CoinGlass HeatMap]({coinglass_link})"
+                    )
+
+                    alerts.append(msg)
+                    last_alerts[symbol] = datetime.now()
 
             if alerts:
-                message = "\n\n".join(alerts)
+                full_message = "\n\n".join(alerts)
                 bot.send_message(
                     CHAT_ID,
-                    f"⚡ Обнаружено сильное движение (15 мин, >10%):\n\n{message}",
+                    f"⚡ Обнаружена высокая волатильность:\n\n{full_message}",
                     parse_mode="Markdown",
-                    disable_web_page_preview=True
+                    disable_web_page_preview=False
                 )
             else:
-                print("Нет резких изменений за последние 15 минут.")
+                print("Нет значительных движений.")
 
-            # ежедневное напоминание, что бот активен
+            # раз в сутки уведомление, что бот жив
             if datetime.now() - last_daily_message > timedelta(hours=24):
-                bot.send_message(CHAT_ID, "🤖 Бот активен. Проверяю рынок CoinGecko.")
+                bot.send_message(CHAT_ID, "🤖 Бот активен. Проверяю рынок OKX.")
                 last_daily_message = datetime.now()
-
-            time.sleep(CHECK_INTERVAL)
-
-        except Exception as e:
-            print("Ошибка в основном цикле:", e)
-            time.sleep(60)
-
-if __name__ == "__main__":
-    run()
 
             time.sleep(CHECK_INTERVAL)
 
