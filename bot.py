@@ -9,89 +9,70 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 CHECK_INTERVAL = 300  # каждые 5 минут
-VOLATILITY_THRESHOLD = 10.0  # 10% движение
-TIMEFRAME_MINUTES = 15  # анализ за 15 минут
+VOLATILITY_THRESHOLD = 10.0  # 10% движение за 24 часа
 
 bot = telebot.TeleBot(TOKEN)
 
-# === Получаем все пары USDT с Binance Futures ===
-def get_futures_symbols():
-    url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+# === Получаем данные с CoinGecko ===
+def get_market_data():
     try:
+        url = (
+            "https://api.coingecko.com/api/v3/coins/markets"
+            "?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false&price_change_percentage=24h"
+        )
         response = requests.get(url, timeout=10)
         response.raise_for_status()
-        data = response.json()
-
-        if "symbols" not in data:
-            print("⚠️ Binance API ответил странно:", data)
-            return []
-
-        symbols = [
-            s["symbol"] for s in data["symbols"]
-            if s.get("contractType") == "PERPETUAL" and s["symbol"].endswith("USDT")
-        ]
-        print(f"✅ Получено {len(symbols)} пар с Binance Futures.")
-        return symbols
-
-    except requests.exceptions.RequestException as e:
-        print("Ошибка подключения к Binance API:", e)
-        return []
-    except ValueError:
-        print("Ошибка разбора JSON — возможно, пришёл HTML-ответ.")
-        return []
-
-# === Получаем изменение цены за выбранный интервал ===
-def get_price_change(symbol):
-    try:
-        url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=1m&limit={TIMEFRAME_MINUTES}"
-        response = requests.get(url, timeout=10)
-        data = response.json()
-
-        if not isinstance(data, list) or len(data) < 2:
-            return None
-
-        open_price = float(data[0][1])
-        close_price = float(data[-1][4])
-        change = ((close_price - open_price) / open_price) * 100
-        return change
-    except Exception:
+        return response.json()
+    except Exception as e:
+        print("Ошибка при получении данных с CoinGecko:", e)
         return None
+
+# === Проверяем волатильность монет ===
+def get_volatile_coins():
+    data = get_market_data()
+    if not data:
+        return []
+
+    alerts = []
+    for coin in data:
+        try:
+            change = coin.get("price_change_percentage_24h", 0)
+            name = coin.get("name", "Unknown")
+            symbol = coin.get("symbol", "").upper()
+            price = coin.get("current_price", 0)
+
+            if change is None:
+                continue
+
+            if abs(change) >= VOLATILITY_THRESHOLD:
+                direction = "🟢 выросла" if change > 0 else "🔴 упала"
+                arrow = "🟢⬆️" if change > 0 else "🔴⬇️"
+                alert = (
+                    f"🚨 *{name}* ({symbol}) {arrow}\n"
+                    f"{direction} на {abs(change):.2f}% за 24 часа.\n"
+                    f"💰 Текущая цена: ${price:.4f}\n"
+                    f"[Открыть на CoinGecko](https://www.coingecko.com/en/coins/{coin['id']})"
+                )
+                alerts.append(alert)
+        except Exception:
+            continue
+
+    return alerts
 
 # === Основной цикл ===
 def run():
-    print("🚀 Бот запущен. Проверяю рынок Binance Futures...")
+    print("🚀 Бот запущен. Проверяю рынок через CoinGecko...")
     try:
-        bot.send_message(CHAT_ID, "✅ Бот запущен. Следит за фьючерсами Binance (волатильность > 10%)")
+        bot.send_message(CHAT_ID, "✅ Бот запущен. Следит за волатильностью монет через CoinGecko (24h > 10%).")
     except Exception as e:
         print("Ошибка отправки стартового сообщения:", e)
 
     last_daily_message = datetime.now() - timedelta(hours=24)
-    symbols = get_futures_symbols()
-
-    if not symbols:
-        bot.send_message(CHAT_ID, "⚠️ Не удалось получить список пар с Binance Futures.")
-        return
 
     while True:
         try:
-            alerts = []
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверяю данные по {len(symbols)} парам...")
-
-            for symbol in symbols:
-                change = get_price_change(symbol)
-                if change is None:
-                    continue
-
-                direction = "🟢 выросла" if change > 0 else "🔴 упала"
-                arrow = "🟢⬆️" if change > 0 else "🔴⬇️"
-
-                if abs(change) >= VOLATILITY_THRESHOLD:
-                    msg = (
-                        f"🚨 *{symbol}* {arrow}\n"
-                        f"{direction} на {abs(change):.2f}% за {TIMEFRAME_MINUTES} минут.\n"
-                        f"[Открыть на Binance](https://www.binance.com/en/futures/{symbol})"
-                    )
-                    alerts.append(msg)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверяю данные с CoinGecko...")
+            alerts = get_volatile_coins()
 
             if alerts:
                 full_message = "\n\n".join(alerts)
@@ -104,9 +85,9 @@ def run():
             else:
                 print("Нет значительных изменений.")
 
-            # Ежедневное уведомление
+            # Каждые 24 часа пишет, что бот активен
             if datetime.now() - last_daily_message > timedelta(hours=24):
-                bot.send_message(CHAT_ID, "🤖 Бот активен. Проверяю рынок Binance Futures.")
+                bot.send_message(CHAT_ID, "🤖 Бот активен. Проверяю рынок CoinGecko.")
                 last_daily_message = datetime.now()
 
             time.sleep(CHECK_INTERVAL)
